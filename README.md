@@ -351,7 +351,3 @@ sequenceDiagram
 This project is licensed under the MIT License.
 
 ---
-
-<p align="center">
-  Built with ❤️ as an <strong>AI Engineering Portfolio Project</strong>
-</p>
