@@ -9,8 +9,6 @@ data/chunked/
 ├── pipeline.py                      # Entry point - chạy chunking
 ├── chunk_config.py                 # Cấu hình pipeline
 ├── chunk_utils.py                  # Hàm core
-├── time_chunking.py                 # Chunking theo thời gian
-├── semantic_chunking.py             # Chunking theo ngữ nghĩa
 ├── cleanup_for_embedding.py         # Clean + context injection
 │
 ├── README.md                        # File này
@@ -20,8 +18,6 @@ data/chunked/
 ├── transcripts_time_chunked.jsonl   # Output: time-based
 ├── transcripts_semantic_chunked.jsonl # Output: semantic
 ├── transcripts_hybrid_chunked.jsonl # Output: hybrid (gốc)
-├── time_chunks.jsonl                # Output cũ
-├── semantic_chunks.jsonl            # Output cũ
 └── transcripts_enhanced.jsonl      # ✅ Output cuối - sẵn sàng embed
 ```
 
