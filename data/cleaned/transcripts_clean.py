@@ -1,247 +1,254 @@
-"""
-transcripts_clean.py - Làm sạch transcript YouTube
-===============================================
-Mục đích: Xóa noise, filler words, timestamp từ transcript thô
-
-Pipeline: data/raw/transcripts.jsonl -> data/cleaned/transcripts_clean.jsonl
-
-Các bước xử lý:
-1. Xóa timestamp SRT/VTT (00:00:00 --> 00:00:00)
-2. Xóa marker noise: [applause], [laughter], [music], [inaudible]
-3. Xóa HTML tags: <font>, <c>, etc.
-4. Xóa filler words: uh, um, you know, I mean
-5. Chuẩn hóa whitespace + dấu câu
-"""
-
 import json
 import re
 from pathlib import Path
 
-# =============================================================================
-# CẤU HÌNH ĐƯỜNG DẪN
-# =============================================================================
-# ROOT_DIR xác định thư mục gốc của project tự động
+# ================= CẤU HÌNH ĐƯỜNG DẪN =================
+# ROOT_DIR: tự động lấy thư mục gốc của project
+# → giúp code portable, không cần hardcode path
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-# File input: transcript thô từ YouTube
+
+# File input: transcript thô (raw từ YouTube API / crawler)
 INPUT_PATH = ROOT_DIR / "data" / "raw" / "transcripts.jsonl"
-# File output: transcript đã làm sạch
-OUTPUT_PATH = ROOT_DIR / "data" / "cleaned" / "transcripts_clean.jsonl"
 
-# =============================================================================
-# REGEX PATTERNS - Định nghĩa các pattern để tìm và thay thế
-# =============================================================================
+# File output: transcript đã clean + tách câu (sentence-level)
+OUTPUT_PATH = ROOT_DIR / "data" / "cleaned" / "transcripts_clean_sentence.jsonl"
 
-# Pattern 1: Xóa marker noise trong ngoặc vuông [applause], [laughter], etc.
-# r"\[(?:inaudible|applause|laughter|music|silence|noise|crosstalk).*?\]"
-# - \[\]: match ngoặc vuông
-# - (?:...): non-capturing group
-# - .*?: match any character (non-greedy)
-# - re.IGNORECASE: không phân biệt hoa/thường
+
+# ================= REGEX CLEAN =================
+# Các pattern regex dùng để loại bỏ noise trong transcript
+
+# Xóa các marker như [applause], [laughter], ...
 BRACKET_NOISE_RE = re.compile(
     r"\[(?:inaudible|applause|laughter|music|silence|noise|crosstalk).*?\]",
     re.IGNORECASE,
 )
 
-# Pattern 2: Xóa HTML tags <anything>
+# Xóa HTML tag như <font>, <c>, ...
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 
-# Pattern 3: Xóa timestamp dạng SRT/VTT "00:00:00 --> 00:00:00"
-# \b: word boundary
-# \d{1,2}: 1-2 digits (phút/giây)
-# (?::\d{2})?: optional seconds với dấu :
-# \s*-->*\s*: match --> với khoảng trắng
+# Xóa timestamp dạng "00:00 --> 00:01"
 TIMESTAMP_RANGE_RE = re.compile(
     r"\b\d{1,2}:\d{2}(?::\d{2})?\s*-->\s*\d{1,2}:\d{2}(?::\d{2})?\b"
 )
 
-# Pattern 4: Xóa standalone timestamp "00:00" không có -->
-# (?<!\d): negative lookbehind - không có digit đứng trước
-# (?!\d): negative lookahead - không có digit đứng sau
+# Xóa timestamp đơn lẻ "00:00"
 STANDALONE_TIMESTAMP_RE = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)")
 
-# Pattern 5: Xóa filler words đầu câu (uh, um, okay, well, so, yeah)
-# ^: đầu chuỗi
-# (?:...)+: một hoặc nhiều filler
-# \b: word boundary
-# [\s,.-]*: khoảng trắng/punctuation đứng sau filler
+# Xóa filler words ở đầu câu (uh, um, well, so...)
 LEADING_FILLER_RE = re.compile(
     r"^(?:(?:uh|um|erm|er|ah|hmm|mm|okay|ok|well|so|yeah)\b[\s,.-]*)+",
     re.IGNORECASE,
 )
 
-# Pattern 6: Xóa filler words cuối câu
+# Xóa filler ở cuối câu
 TRAILING_FILLER_RE = re.compile(
     r"(?:[\s,.;!?-]*(?:uh|um|erm|er|ah|hmm|mm|you know|i mean))+$",
     re.IGNORECASE,
 )
 
-# Pattern 7: Xóa filler words trong câu (giữ lại punctuation)
-# Danh sách các pattern để xử lý filler nội dung
+# Xóa filler nằm trong câu (giữ lại dấu câu xung quanh)
 INLINE_FILLER_PATTERNS = [
-    # Xóa "uh", "um", "er", etc. trong câu
     re.compile(r"(?i)(^|[\s,.;!?-])(?:uh|um|erm|er|ah|hmm|mm)(?=$|[\s,.;!?-])"),
-    # Xóa "you know", "i mean" trong câu
     re.compile(r"(?i)(^|[\s,.;!?-])(?:you know|i mean)(?=$|[\s,.;!?-])"),
 ]
 
 
-def clean_segment_text(text: str) -> str:
+# ================= HÀM CLEAN TEXT =================
+def clean_text(text: str) -> str:
     """
-    Làm sạch một segment text.
+    Làm sạch text của 1 segment transcript.
 
-    Args:
-        text: Text đầu vào từ transcript
-
-    Returns:
-        Text đã làm sạch
+    Mục tiêu:
+    - loại bỏ noise (timestamp, filler, html)
+    - chuẩn hóa text để split sentence chính xác hơn
     """
-    # =============================================================================
-    # BƯỚC 1: Xử lý newline/CRLF
-    # =============================================================================
-    # Thay \r\n bằng khoảng trắng đơn
+
     if not text:
         return ""
 
+    # 1. Xóa newline → tránh split sai câu
     text = text.replace("\r", " ").replace("\n", " ")
 
-    # =============================================================================
-    # BƯỚC 2: Xóa timestamp (nếu có trong text)
-    # =============================================================================
+    # 2. Xóa timestamp
     text = TIMESTAMP_RANGE_RE.sub(" ", text)
     text = STANDALONE_TIMESTAMP_RE.sub(" ", text)
 
-    # =============================================================================
-    # BƯỚC 3: Xóa marker noise và HTML
-    # =============================================================================
+    # 3. Xóa noise và HTML
     text = BRACKET_NOISE_RE.sub(" ", text)
     text = HTML_TAG_RE.sub(" ", text)
 
-    # =============================================================================
-    # BƯỚC 4: Chuẩn hóa whitespace (nhiều space -> 1 space)
-    # =============================================================================
+    # 4. Chuẩn hóa whitespace (nhiều space → 1 space)
     text = re.sub(r"\s+", " ", text).strip()
 
-    # =============================================================================
-    # BƯỚC 5: Xóa filler đầu câu
-    # =============================================================================
+    # 5. Xóa filler ở đầu câu
     text = LEADING_FILLER_RE.sub("", text)
 
-    # =============================================================================
-    # BƯỚC 6: Xóa filler trong câu (giữ lại dấu phân cách)
-    # =============================================================================
+    # 6. Xóa filler trong câu
     for pattern in INLINE_FILLER_PATTERNS:
-        # Lambda giữ lại ký tự đứng trước filler (dấu phân cách)
         text = pattern.sub(lambda m: m.group(1), text)
 
-    # =============================================================================
-    # BƯỚC 7: Xóa filler cuối câu
-    # =============================================================================
+    # 7. Xóa filler cuối câu
     text = TRAILING_FILLER_RE.sub("", text)
 
-    # =============================================================================
-    # BƯỚC 8: Chuẩn hóa dấu câu và whitespace
-    # =============================================================================
-    # Xóa space trước dấu câu: "text , " -> "text,"
-    text = re.sub(r"\s+([,.;!?])", r"\1", text)
-    # Xóa dấu lặp: "!!!" -> "!"
-    text = re.sub(r"([,.;!?]){2,}", r"\1", text)
-    # Xóa empty parentheses: "() "
-    text = re.sub(r"\(\s*\)", " ", text)
-    # Xóa nhiều space liên tiếp
-    text = re.sub(r"\s{2,}", " ", text)
+    # 8. Chuẩn hóa dấu câu
+    text = re.sub(r"\s+([,.;!?])", r"\1", text)   # bỏ space trước dấu
+    text = re.sub(r"([,.;!?]){2,}", r"\1", text)  # !!! → !
 
-    # =============================================================================
-    # BƯỚC 9: Xóa punctuation đầu/cuối
-    # =============================================================================
+    # 9. Xóa dấu câu dư ở đầu/cuối
     return text.strip(" -.,;:!?")
 
 
-def clean_record_preserve_structure(record: dict) -> dict:
+# ================= SPLIT SENTENCE =================
+def split_sentences(text: str):
     """
-    Làm sạch một record transcript nhưng giữ nguyên cấu trúc.
+    Tách text thành các câu.
 
-    Args:
-        Record có video_id, title, transcript: [{text, start, duration}, ...]
-
-    Returns:
-        Record đã làm sạch với cấu trúc tương tự
+    Logic:
+    - split sau dấu . ! ?
+    - giữ lại dấu câu
     """
-    # Copy dict gốc để không modify original
-    cleaned = dict(record)
-    cleaned_segments = []
 
-    # Duyệt qua từng segment trong transcript
-    for seg in record.get("transcript", []):
-        # Lấy text và clean
-        cleaned_text = clean_segment_text(seg.get("text", ""))
+    sentences = re.split(r'(?<=[.!?])\s+', text)
 
-        # Bỏ qua segment rỗng sau khi clean
-        if not cleaned_text:
+    # loại bỏ câu rỗng hoặc quá ngắn (noise)
+    return [
+        s.strip()
+        for s in sentences
+        if s.strip() and len(s.strip()) > 3
+    ]
+
+
+# ================= MERGE SENTENCE NGẮN =================
+def merge_short_sentences(sentences, min_len=20):
+    """
+    Merge các câu quá ngắn để tránh:
+    - noise (Okay, So, Yeah...)
+    - embedding kém chất lượng
+
+    Logic:
+    - câu ngắn → merge với câu trước
+    - câu trước ngắn → cũng merge
+    - nếu câu trước kết thúc bằng dấu yếu (",", "and") → merge
+    """
+
+    merged = []
+
+    for sent in sentences:
+        if not merged:
+            merged.append(sent)
             continue
 
-        # Thêm segment đã clean vào danh sách
-        cleaned_segments.append(
-            {
-                "text": cleaned_text,
-                "start": seg.get("start"),
-                "duration": seg.get("duration"),
-            }
-        )
+        prev = merged[-1]
 
-    # Cập nhật transcript đã clean
-    cleaned["transcript"] = cleaned_segments
-    return cleaned
+        # nếu câu trước kết thúc bằng dấu "yếu" → khả năng chưa kết thúc ý
+        if prev.endswith((",", "and", "or", "but")):
+            merged[-1] += " " + sent
+
+        # nếu câu hiện tại quá ngắn → merge vào câu trước
+        elif len(sent) < min_len:
+            merged[-1] += " " + sent
+
+        # nếu câu trước quá ngắn → merge tiếp
+        elif len(prev) < min_len:
+            merged[-1] += " " + sent
+
+        else:
+            merged.append(sent)
+
+    return merged
 
 
-def clean_transcripts_file(input_path: Path, output_path: Path) -> None:
+# ================= SPLIT SEGMENT =================
+def split_segment(seg):
     """
-    Xử lý toàn bộ file transcript.
+    Input:
+        seg = {
+            "text": "...",
+            "start": ...,
+            "duration": ...
+        }
 
-    Args:
-        input_path: File input .jsonl
-        output_path: File output .jsonl
+    Output:
+        list các segment nhỏ (sentence-level)
+
+    Ý tưởng:
+    - clean text
+    - split thành câu
+    - merge câu ngắn
+    - chia lại timestamp theo tỷ lệ độ dài câu
     """
-    total_records = 0  # Số video đã xử lý
-    total_segments_before = 0  # Tổng segments trước clean
-    total_segments_after = 0  # Tổng segments sau clean
 
-    # =============================================================================
-    # ĐỌC VÀ GHI FILE
-    # =============================================================================
-    with (
-        input_path.open("r", encoding="utf-8") as fin,
-        output_path.open("w", encoding="utf-8") as fout,
-    ):
-        # Duyệt từng dòng trong file
-        for line_no, line in enumerate(fin, start=1):
-            line = line.strip()
-            if not line:
-                continue
+    # 1. Clean text
+    text = clean_text(seg.get("text", ""))
+    if not text:
+        return []
 
-            # Parse JSON
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                print(f"SKIP line {line_no}: invalid JSON")
-                continue
+    # 2. Split thành câu
+    sentences = split_sentences(text)
 
-            # Đếm segments trước clean
-            total_records += 1
-            total_segments_before += len(record.get("transcript", []))
+    # 3. Merge câu ngắn để giảm noise
+    sentences = merge_short_sentences(sentences)
 
-            # Clean record
-            cleaned_record = clean_record_preserve_structure(record)
-            total_segments_after += len(cleaned_record.get("transcript", []))
+    # 4. Tính tổng độ dài (dùng cho chia timestamp)
+    total_len = sum(len(s) for s in sentences)
 
-            # Ghi ra file output
-            fout.write(json.dumps(cleaned_record, ensure_ascii=False) + "\n")
+    current_start = seg["start"]
+    duration = seg["duration"]
 
-    # In thống kê
-    print(f"Done: {total_records} records")
-    print(f"Segments before: {total_segments_before}")
-    print(f"Segments after : {total_segments_after}")
-    print(f"Output: {output_path}")
+    results = []
+
+    for sent in sentences:
+        # Tỷ lệ độ dài câu
+        ratio = len(sent) / total_len if total_len > 0 else 0
+
+        # Duration của câu (approximate)
+        sent_duration = duration * ratio
+
+        results.append({
+            "text": sent,
+            "start": round(current_start, 3),
+            "duration": round(sent_duration, 3)
+        })
+
+        # cập nhật start cho câu tiếp theo
+        current_start += sent_duration
+
+    return results
 
 
+# ================= MAIN PIPELINE =================
+def process_file():
+    """
+    Pipeline chính:
+
+    raw transcript
+    → clean từng segment
+    → split thành sentence-level
+    → merge noise
+    → ghi file mới
+    """
+
+    with open(INPUT_PATH, "r", encoding="utf-8") as fin, \
+         open(OUTPUT_PATH, "w", encoding="utf-8") as fout:
+
+        for line in fin:
+            record = json.loads(line)
+
+            new_segments = []
+
+            # duyệt từng segment trong transcript
+            for seg in record.get("transcript", []):
+                # split thành sentence-level segments
+                new_segments.extend(split_segment(seg))
+
+            # ghi đè transcript bằng version mới
+            record["transcript"] = new_segments
+
+            fout.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    print("Done:", OUTPUT_PATH)
+
+
+# ================= ENTRY POINT =================
 if __name__ == "__main__":
-    clean_transcripts_file(INPUT_PATH, OUTPUT_PATH)
+    process_file()
