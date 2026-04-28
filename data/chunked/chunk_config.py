@@ -21,6 +21,10 @@ class ChunkConfig:
     max_semantic_duration: float = 120.0
     min_lexical_overlap: float = 0.08
 
+    semantic_similarity_threshold: float = 0.75
+    max_embedding_tokens: int = 300
+    min_chunk_chars: int = 80
+    
     chunk_version: str = "v1"
     write_intermediate_time_chunks: bool = True
 
@@ -41,7 +45,7 @@ def build_default_config(strategy: str = "hybrid") -> ChunkConfig:
     root_dir = Path(__file__).resolve().parent.parent.parent
     return ChunkConfig(
         root_dir=root_dir,
-        input_path=root_dir / "data" / "cleaned" / "transcripts_clean.jsonl",
+        input_path = root_dir / "data" / "cleaned" / "transcripts_clean_sentence.jsonl",
         output_dir=root_dir / "data" / "chunked",
         strategy=strategy.lower().strip(),
     )
