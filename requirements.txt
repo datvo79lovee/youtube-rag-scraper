@@ -15,3 +15,8 @@ tqdm>=4.66.0
 # ========= Dataset export =========
 pandas>=2.0.0
 pyarrow>=12.0.0
+# thu vien
+
+langchain-community
+jq
+langchain_huggingface
