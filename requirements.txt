@@ -18,5 +18,6 @@ pyarrow>=12.0.0
 # thu vien
 
 langchain-community
+langchain-core
 jq
 langchain_huggingface
